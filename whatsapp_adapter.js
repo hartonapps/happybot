@@ -30,7 +30,7 @@ function textFromMessage(message) {
   );
 }
 
-function startPythonCore(sock, messageCache) {
+function startPythonCore(sock, messageCache, botMessageIds) {
   const py = spawn(process.env.PYTHON || 'python', ['main.py', '--stdio'], {
     cwd: process.cwd(),
     stdio: ['pipe', 'pipe', 'inherit']
@@ -45,7 +45,11 @@ function startPythonCore(sock, messageCache) {
     const action = JSON.parse(line);
     if (action.action === 'send_message') {
       const options = action.reply_to && messageCache.has(action.reply_to) ? { quoted: messageCache.get(action.reply_to) } : {};
-      await sock.sendMessage(action.chat_id, { text: action.text }, options);
+      const result = await sock.sendMessage(action.chat_id, { text: action.text }, options);
+      if (result?.key?.id) {
+        botMessageIds.add(result.key.id);
+        messageCache.set(result.key.id, result);
+      }
     }
     if (action.action === 'react') {
       await sock.sendMessage(action.chat_id, { react: { text: action.emoji, key: { id: action.message_id, remoteJid: action.chat_id } } });
@@ -62,6 +66,7 @@ function startPythonCore(sock, messageCache) {
 async function start(attempt = 1) {
   let py = null;
   const messageCache = new Map();
+  const botMessageIds = new Set();
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   if (!state.creds.registered) {
     console.log('No saved WhatsApp session found. Run `node connect.js` first, or run `python main.py` to launch setup automatically.');
@@ -80,7 +85,7 @@ async function start(attempt = 1) {
   sock.ev.on('connection.update', async ({ connection, lastDisconnect }) => {
     if (connection === 'open') {
       console.log('HappyBot connected to WhatsApp. Loading plugins now...');
-      py = startPythonCore(sock, messageCache);
+      py = startPythonCore(sock, messageCache, botMessageIds);
       return;
     }
     if (connection === 'close') {
@@ -103,7 +108,13 @@ async function start(attempt = 1) {
   sock.ev.on('messages.upsert', ({ messages, type }) => {
     if (type !== 'notify' || !py || !py.stdin.writable) return;
     for (const msg of messages) {
-      if (!msg.message || msg.key.fromMe) continue;
+      if (!msg.message) continue;
+      if (msg.key.fromMe) {
+        if (botMessageIds.has(msg.key.id)) {
+          botMessageIds.delete(msg.key.id);
+          continue;
+        }
+      }
       messageCache.set(msg.key.id, msg);
       if (messageCache.size > 5000) messageCache.delete(messageCache.keys().next().value);
       py.stdin.write(JSON.stringify({

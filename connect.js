@@ -1,9 +1,21 @@
 const readline = require('readline');
 const fs = require('fs');
-const makeWASocket = require('@whiskeysockets/baileys').default;
-const { DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys');
 const P = require('pino');
 const qrcode = require('qrcode-terminal');
+
+let makeWASocket;
+let DisconnectReason;
+let useMultiFileAuthState;
+
+try {
+  const baileys = require('@whiskeysockets/baileys');
+  makeWASocket = baileys.default;
+  DisconnectReason = baileys.DisconnectReason;
+  useMultiFileAuthState = baileys.useMultiFileAuthState;
+} catch (error) {
+  console.error('Missing Node dependencies. Run `npm install` in this folder, then start again.');
+  process.exit(1);
+}
 
 const AUTH_DIR = 'auth_info';
 const MAX_RESTARTS = 5;

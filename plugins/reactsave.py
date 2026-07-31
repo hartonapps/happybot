@@ -4,7 +4,8 @@
 @bot.command("reactsave", aliases=("rsave",), owner_only=True, help="Turn reaction media saving on or off: reactsave on/off.")
 async def reactsave(ctx):
     if not ctx.args or ctx.args[0].lower() not in {"on", "off"}:
-        await ctx.reply("Usage: .reactsave on or .reactsave off")
+        prefix = ctx.bot.prefixes[0] if ctx.bot.prefixes else "!"
+        await ctx.reply(f"Usage: {prefix}reactsave on or {prefix}reactsave off")
         return
 
     enabled = ctx.args[0].lower() == "on"

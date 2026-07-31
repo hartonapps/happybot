@@ -104,6 +104,14 @@ python main.py --stdio   # internal bridge mode used by whatsapp_adapter.js
 npm install              # manually install/update Baileys packages if needed
 ```
 
+## How to talk to it
+
+- Send messages to the WhatsApp account that was linked during setup.
+- You can also send commands from the same account, including in your own chat, and the bot will still see them.
+- Use a different WhatsApp account, or a group where the bot account is present.
+- Send a command like `!ping` or `/ping`.
+- The bot ignores only its own auto-replies so it does not loop forever.
+
 ## Requirements
 
 `requirements.txt` is intentionally small because the Python side uses only the standard library. WhatsApp connectivity is not a Python package; it comes from Baileys in `package.json` and is installed with npm.
@@ -115,7 +123,7 @@ npm install              # manually install/update Baileys packages if needed
 - `!runtime`, `!status`, or `!stats` shows uptime, queue size, dropped events, errors, plugin count, and active tasks. This command is owner-only.
 - `!plugins` lists loaded plugins. This command is owner-only.
 
-Set your WhatsApp ID in `OWNER_IDS` inside `config.py` before relying on owner-only commands.
+Set your own WhatsApp number in `OWNER_IDS` inside `config.py` before relying on owner-only commands. Use your number in international format, with or without the `@s.whatsapp.net` suffix. Example: `2348012345678` or `2348012345678@s.whatsapp.net`.
 
 ## Adding a plugin
 

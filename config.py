@@ -1,7 +1,10 @@
 """Configuration defaults for HappyBot."""
 
-OWNER_IDS = {"owner"}
-PREFIXES = ("!", "/")
+# Put your WhatsApp number here in international format, with or without the
+# `@s.whatsapp.net` suffix. Example: {"2348012345678"} or
+# {"2348012345678@s.whatsapp.net"}.
+OWNER_IDS = {"2348067871926"}
+PREFIXES = ("!", "/", ".")
 DATABASE_PATH = "database.json"
 PLUGINS_PATH = "plugins"
 COMMAND_TIMEOUT = 30

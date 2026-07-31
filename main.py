@@ -12,6 +12,7 @@ import importlib.util
 import inspect
 import json
 import logging
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,24 @@ from typing import Any, Awaitable, Callable
 import config
 
 Handler = Callable[["Context"], Any | Awaitable[Any]]
+
+
+def normalize_whatsapp_id(value: Any) -> str:
+    """Normalize WhatsApp IDs so owner checks work with phone numbers or JIDs."""
+
+    text = str(value).strip().lower()
+    if not text:
+        return ""
+    if "@" in text:
+        text = text.split("@", 1)[0]
+    digits = "".join(ch for ch in text if ch.isdigit())
+    return digits or text
+
+
+def npm_command() -> str:
+    """Return an npm executable that works on the current platform."""
+
+    return shutil.which("npm.cmd") or shutil.which("npm") or "npm"
 
 
 @dataclass
@@ -86,7 +105,7 @@ class Context:
         self.bot = bot
         self.event = event
         self.message = event.text
-        self.sender = event.sender_id
+        self.sender = normalize_whatsapp_id(event.sender_id)
         self.chat = event.chat_id
         self.command = command
         self.args = args or []
@@ -149,7 +168,7 @@ class HappyBot:
 
     def __init__(self) -> None:
         self.prefixes = tuple(config.PREFIXES)
-        self.owner_ids = set(config.OWNER_IDS)
+        self.owner_ids = {normalize_whatsapp_id(owner_id) for owner_id in config.OWNER_IDS if normalize_whatsapp_id(owner_id)}
         self.plugins_path = Path(config.PLUGINS_PATH)
         self.db = JsonDatabase(config.DATABASE_PATH)
         self.plugins: dict[str, PluginInfo] = {}
@@ -293,6 +312,9 @@ class HappyBot:
     async def react(self, chat_id: str, message_id: str, emoji: str) -> None:
         self.log.info("react chat=%s message=%s emoji=%s", chat_id, message_id, emoji)
 
+    async def adapter_action(self, action: str, **kwargs: Any) -> None:
+        self.log.info("adapter_action action=%s kwargs=%s", action, kwargs)
+
     async def download_media(self, event: Event, target_dir: str | Path | None = None) -> Path | None:
         if event.media is None:
             return None
@@ -341,6 +363,9 @@ class StdioHappyBot(HappyBot):
     async def react(self, chat_id: str, message_id: str, emoji: str) -> None:
         self._write_action({"action": "react", "chat_id": chat_id, "message_id": message_id, "emoji": emoji})
 
+    async def adapter_action(self, action: str, **kwargs: Any) -> None:
+        self._write_action({"action": "adapter_action", "name": action, **kwargs})
+
     def _write_action(self, action: dict[str, Any]) -> None:
         print(json.dumps(action, ensure_ascii=False), flush=True)
 
@@ -353,8 +378,9 @@ def run_whatsapp_adapter() -> int:
         return 1
     if not Path("node_modules").exists():
         print("Installing Baileys dependencies with npm install...")
-        install = subprocess.run(["npm", "install"], check=False)
+        install = subprocess.run([npm_command(), "install"], check=False)
         if install.returncode != 0:
+            print("npm install failed. Make sure Node.js and npm are installed, then run `npm install` in this folder.")
             return install.returncode
     if not Path("auth_info/creds.json").exists():
         print("No saved WhatsApp session found. Starting one-time connection setup...")
