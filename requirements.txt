@@ -1,0 +1,3 @@
+# Python dependencies for HappyBot.
+# None are required right now; the Python core uses only the standard library.
+# WhatsApp login uses Baileys from package.json, installed automatically by `python main.py` or manually with `npm install`.
