@@ -107,6 +107,7 @@ class Context:
         self.message = event.text
         self.sender = normalize_whatsapp_id(event.sender_id)
 self.bot.log.info(f"DEBUG: sender_id={event.sender_id} -> normalized={self.sender} -> is_owner={self.sender in self.bot.owner_ids}")
+
         self.chat = event.chat_id
         self.command = command
         self.args = args or []
