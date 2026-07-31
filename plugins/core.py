@@ -1,6 +1,11 @@
 """Core HappyBot commands implemented as regular plugins."""
 
 
+@bot.command("ping", aliases=("p",), help="Check whether the bot is alive.")
+async def ping(ctx):
+    await ctx.reply("pong")
+
+
 @bot.command("help", aliases=("menu",), help="Show available commands.")
 async def help_command(ctx):
     await ctx.reply(ctx.bot.help_text())

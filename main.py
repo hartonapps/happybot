@@ -12,7 +12,6 @@ import inspect
 import json
 import logging
 import tempfile
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
@@ -121,7 +120,7 @@ class PluginAPI:
 
     def command(self, name: str, *, aliases: tuple[str, ...] = (), owner_only: bool = False, admin_only: bool = False, help: str = ""):
         def decorator(func: Handler) -> Handler:
-            self.commands.append(({"name": name.lower(), "aliases": tuple(alias.lower() for alias in aliases), "owner_only": owner_only, "admin_only": admin_only, "help": help}, func))
+            self.commands.append(({"name": name, "aliases": aliases, "owner_only": owner_only, "admin_only": admin_only, "help": help}, func))
             return func
 
         return decorator
@@ -142,7 +141,7 @@ class PluginAPI:
 
 
 class HappyBot:
-    """Async core optimized for both tiny installs and very busy WhatsApp accounts."""
+    """Small async core that discovers plugins and isolates handler errors."""
 
     def __init__(self) -> None:
         self.prefixes = tuple(config.PREFIXES)
@@ -150,26 +149,16 @@ class HappyBot:
         self.plugins_path = Path(config.PLUGINS_PATH)
         self.db = JsonDatabase(config.DATABASE_PATH)
         self.plugins: dict[str, PluginInfo] = {}
-        self.command_handlers: dict[str, list[tuple[PluginInfo, dict[str, Any], Handler]]] = {}
-        self.listener_handlers: dict[str, list[tuple[PluginInfo, Handler]]] = {}
-        self.queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=config.MAX_QUEUE_SIZE)
-        self.handler_slots = asyncio.Semaphore(config.MAX_CONCURRENT_HANDLERS)
-        self.running_tasks: set[asyncio.Task[Any]] = set()
+        self.queue: asyncio.Queue[Event] = asyncio.Queue()
         self.log = logging.getLogger("happybot")
-        self.started_at = time.monotonic()
-        self.stats = {"received": 0, "processed": 0, "dropped": 0, "errors": 0}
         self.temp_dir = Path(tempfile.mkdtemp(prefix="happybot-"))
 
     def load_plugins(self) -> None:
-        self.plugins.clear()
-        self.command_handlers.clear()
-        self.listener_handlers.clear()
         self.plugins_path.mkdir(exist_ok=True)
         for path in sorted(self.plugins_path.glob("*.py")):
             if path.name.startswith("_"):
                 continue
             self.load_plugin(path)
-        self._rebuild_indexes()
 
     def load_plugin(self, path: Path) -> None:
         api = PluginAPI()
@@ -178,66 +167,40 @@ class HappyBot:
             raise RuntimeError(f"Cannot load plugin {path}")
         module = importlib.util.module_from_spec(spec)
         module.bot = api
-        try:
-            spec.loader.exec_module(module)
-        except Exception:
-            self.stats["errors"] += 1
-            self.log.exception("Failed to load plugin %s", path.stem)
-            return
+        spec.loader.exec_module(module)
         self.plugins[path.stem] = PluginInfo(path.stem, module, api.commands, api.listeners, api.tasks)
         self.log.info("Loaded plugin %s", path.stem)
 
-    def _rebuild_indexes(self) -> None:
-        for plugin in self.plugins.values():
-            for meta, handler in plugin.commands:
-                for name in {meta["name"], *meta["aliases"]}:
-                    self.command_handlers.setdefault(name, []).append((plugin, meta, handler))
-            for event_type, handler in plugin.listeners:
-                self.listener_handlers.setdefault(event_type, []).append((plugin, handler))
-
-    async def emit(self, event: Event) -> bool:
-        self.stats["received"] += 1
-        try:
-            self.queue.put_nowait(event)
-            return True
-        except asyncio.QueueFull:
-            self.stats["dropped"] += 1
-            self.log.warning("Dropping event %s because queue is full", event.message_id)
-            return False
+    async def emit(self, event: Event) -> None:
+        await self.queue.put(event)
 
     async def serve(self) -> None:
         self.load_plugins()
-        self._start_background_tasks()
+        asyncio.create_task(self._run_tasks())
         while True:
             event = await self.queue.get()
-            task = asyncio.create_task(self._dispatch(event))
-            self.running_tasks.add(task)
-            task.add_done_callback(self.running_tasks.discard)
-            task.add_done_callback(lambda _task: self.queue.task_done())
+            asyncio.create_task(self._dispatch(event))
 
     async def _dispatch(self, event: Event) -> None:
         command, args = self._parse_command(event.text)
-        calls: list[tuple[PluginInfo, Handler, Context]] = []
-        for plugin, handler in self.listener_handlers.get(event.kind, []):
-            if plugin.enabled:
-                calls.append((plugin, handler, Context(self, event, command, args)))
-        for plugin, handler in self.listener_handlers.get("*", []):
-            if plugin.enabled:
-                calls.append((plugin, handler, Context(self, event, command, args)))
-        if command:
-            for plugin, meta, handler in self.command_handlers.get(command, []):
-                if not plugin.enabled:
-                    continue
-                ctx = Context(self, event, command, args)
-                if meta["owner_only"] and not ctx.is_owner:
-                    await ctx.reply("Owner permission required.")
-                elif meta["admin_only"] and not ctx.is_admin:
-                    await ctx.reply("Admin permission required.")
-                else:
-                    calls.append((plugin, handler, ctx))
-        if calls:
-            await asyncio.gather(*(self._safe_call(handler, ctx, plugin.name) for plugin, handler, ctx in calls))
-        self.stats["processed"] += 1
+        for plugin in self.plugins.values():
+            if not plugin.enabled:
+                continue
+            for event_type, handler in plugin.listeners:
+                if event_type in {event.kind, "*"}:
+                    await self._safe_call(handler, Context(self, event, command, args), plugin.name)
+            if command:
+                for meta, handler in plugin.commands:
+                    names = {meta["name"], *meta["aliases"]}
+                    if command not in names:
+                        continue
+                    ctx = Context(self, event, command, args)
+                    if meta["owner_only"] and not ctx.is_owner:
+                        await ctx.reply("Owner permission required.")
+                    elif meta["admin_only"] and not ctx.is_admin:
+                        await ctx.reply("Admin permission required.")
+                    else:
+                        await self._safe_call(handler, ctx, plugin.name)
 
     def _parse_command(self, text: str) -> tuple[str, list[str]]:
         for prefix in self.prefixes:
@@ -247,42 +210,25 @@ class HappyBot:
         return "", []
 
     async def _safe_call(self, handler: Handler, ctx: Context, plugin_name: str) -> None:
-        async with self.handler_slots:
-            started = time.monotonic()
-            try:
-                result = handler(ctx)
-                if inspect.isawaitable(result):
-                    await asyncio.wait_for(result, timeout=config.COMMAND_TIMEOUT)
-            except Exception:
-                self.stats["errors"] += 1
-                self.log.exception("Plugin %s failed", plugin_name)
-            finally:
-                elapsed = time.monotonic() - started
-                if elapsed >= config.SLOW_HANDLER_WARNING:
-                    self.log.warning("Plugin %s handler took %.2fs", plugin_name, elapsed)
+        try:
+            result = handler(ctx)
+            if inspect.isawaitable(result):
+                await asyncio.wait_for(result, timeout=config.COMMAND_TIMEOUT)
+        except Exception:
+            self.log.exception("Plugin %s failed", plugin_name)
 
-    def _start_background_tasks(self) -> None:
-        for plugin in self.plugins.values():
-            if plugin.enabled:
-                for interval, handler in plugin.tasks:
-                    task = asyncio.create_task(self._task_loop(interval, handler, plugin.name))
-                    self.running_tasks.add(task)
-                    task.add_done_callback(self.running_tasks.discard)
+    async def _run_tasks(self) -> None:
+        while True:
+            for plugin in self.plugins.values():
+                if plugin.enabled:
+                    for interval, handler in plugin.tasks:
+                        asyncio.create_task(self._task_loop(interval, handler, plugin.name))
+            await asyncio.Event().wait()
 
     async def _task_loop(self, interval: int, handler: Handler, plugin_name: str) -> None:
         while True:
             await asyncio.sleep(interval)
             await self._safe_call(handler, Context(self, Event("task", "system", "system")), plugin_name)
-
-    def runtime(self) -> dict[str, Any]:
-        return {
-            "uptime_seconds": int(time.monotonic() - self.started_at),
-            "queue_size": self.queue.qsize(),
-            "queue_limit": config.MAX_QUEUE_SIZE,
-            "active_tasks": len(self.running_tasks),
-            "plugins": len(self.plugins),
-            **self.stats,
-        }
 
     async def send_message(self, chat_id: str, text: str, **kwargs: Any) -> None:
         self.log.info("send_message chat=%s text=%s kwargs=%s", chat_id, text, kwargs)
