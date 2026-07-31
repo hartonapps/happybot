@@ -1,0 +1,15 @@
+{
+  "name": "happybot",
+  "version": "0.1.0",
+  "description": "HappyBot WhatsApp adapter using Baileys with a Python plugin core.",
+  "main": "whatsapp_adapter.js",
+  "scripts": {
+    "connect": "node connect.js",
+    "start": "node whatsapp_adapter.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "latest",
+    "pino": "latest",
+    "qrcode-terminal": "latest"
+  }
+}
