@@ -129,27 +129,57 @@ async function start(attempt = 1) {
     }
   });
 
-  // DEBUG: Log all incoming events
+  // Handle reactions - fetch message if not in cache
   sock.ev.on('messages.reaction', async (reactions) => {
-    console.log('🔔 REACTION EVENT FIRED:', reactions);
+    console.log('🔔 REACTION EVENT FIRED:', reactions.length, 'reactions');
     if (!py || !py.stdin.writable) {
       console.log('❌ Python not ready, skipping reaction');
       return;
     }
     for (const { key, reaction } of reactions) {
-      console.log(`📍 Processing reaction: ${reaction} on message ${key.id}`);
-      const originalMessage = messageCache.get(key.id);
+      const reactionText = reaction.text || reaction;
+      console.log(`📍 Processing reaction: ${reactionText} on message ${key.id}`);
+      
+      let originalMessage = messageCache.get(key.id);
+      
+      // If message not in cache, try to fetch it from WhatsApp
       if (!originalMessage) {
-        console.log(`❌ Message ${key.id} not in cache`);
+        console.log(`⚠️ Message ${key.id} not in cache, attempting to fetch from WhatsApp...`);
+        try {
+          const fetchedMsg = await sock.loadMessage(key.remoteJid, key.id);
+          if (fetchedMsg) {
+            console.log(`✅ Fetched message ${key.id} from WhatsApp`);
+            originalMessage = fetchedMsg;
+            messageCache.set(key.id, fetchedMsg);
+          } else {
+            console.log(`❌ Could not fetch message ${key.id}`);
+          }
+        } catch (err) {
+          console.log(`❌ Error fetching message: ${err.message}`);
+        }
+      }
+      
+      if (!originalMessage) {
+        console.log(`⚠️ Skipping reaction - message ${key.id} not available`);
+        // Still send to Python so plugin can log it
+        py.stdin.write(JSON.stringify({
+          message_id: key.id,
+          chat_id: key.remoteJid,
+          sender_id: key.participant || key.remoteJid,
+          text: reactionText,
+          kind: 'reaction',
+          is_group: Boolean(key.participant),
+          raw: null
+        }) + '\n');
         continue;
       }
       
-      console.log(`✅ Sending reaction to Python: emoji=${reaction}, message=${key.id}`);
+      console.log(`✅ Sending reaction to Python: emoji=${reactionText}, message=${key.id}`);
       py.stdin.write(JSON.stringify({
         message_id: key.id,
         chat_id: key.remoteJid,
         sender_id: key.participant || key.remoteJid,
-        text: reaction,
+        text: reactionText,
         kind: 'reaction',
         is_group: Boolean(key.participant),
         raw: originalMessage
