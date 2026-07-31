@@ -149,15 +149,11 @@ async function start(attempt = 1) {
       let mediaBase64 = null;
 
       try {
-    //   download image/video/document here
-    //   returns a Buffer
-
-        mediaBase64 = buffer.toString("base64");
-}
-      catch (err) {
+    const buffer = await sock.downloadMediaMessage(originalMessage);
+    if (buffer) mediaBase64 = buffer.toString("base64");
+} catch (err) {
     console.log("Download failed:", err);
 }
-      
       if (!originalMessage) {
         console.log(`❌ Message ${key.id} not in cache. Cache size: ${messageCache.size}`);
         console.log(`📋 Cached message IDs: ${Array.from(messageCache.keys()).slice(-5)}`);
