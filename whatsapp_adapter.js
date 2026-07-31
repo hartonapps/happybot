@@ -4,7 +4,6 @@ const fs = require('fs');
 const makeWASocket = require('@whiskeysockets/baileys').default;
 const { DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys');
 const P = require('pino');
-const makeWASocket = require('@whiskeysockets/baileys').default;
 
 const AUTH_DIR = 'auth_info';
 const MAX_RECONNECTS = 5;
