@@ -391,24 +391,38 @@ class StdioHappyBot(HappyBot):
     """Bridge mode used by the Baileys Node.js WhatsApp adapter."""
 
     async def run_stdio(self) -> None:
-        self.load_plugins()
-        self._start_background_tasks()
-        loop = asyncio.get_running_loop()
-        while True:
-            try:
-                line = await loop.run_in_executor(None, input)
-            except EOFError:
-                break
-            if not line.strip():
-                continue
-            try:
-                payload = json.loads(line)
-                event = Event(**payload)
-            except Exception:
-                self.stats["errors"] += 1
-                self.log.exception("Invalid adapter event: %s", line)
-                continue
-            await self._dispatch(event)
+    self.load_plugins()
+    self._start_background_tasks()
+    loop = asyncio.get_running_loop()
+    while True:
+        try:
+            line = await loop.run_in_executor(None, input)
+        except EOFError:
+            break
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except Exception:
+            self.stats["errors"] += 1
+            self.log.exception("Invalid JSON from adapter: %s", line)
+            continue
+
+        # Whitelist fields the Event dataclass understands; ignore extras like media_base64.
+        event_fields = {f for f in Event.__dataclass_fields__}
+        event_kwargs = {k: v for k, v in payload.items() if k in event_fields}
+        # Preserve media_base64 for ctx.download_media() to pick up via event.raw.
+        if "media_base64" in payload and "raw" in event_kwargs and isinstance(event_kwargs["raw"], dict):
+            event_kwargs["raw"]["media_base64"] = payload["media_base64"]
+
+        try:
+            event = Event(**event_kwargs)
+        except Exception:
+            self.stats["errors"] += 1
+            self.log.exception("Invalid adapter event: %s", line)
+            continue
+        await self._dispatch(event)
+                
 
     async def send_message(self, chat_id: str, text: str, **kwargs: Any) -> None:
         self._write_action({"action": "send_message", "chat_id": chat_id, "text": text, **kwargs})
