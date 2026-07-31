@@ -393,7 +393,7 @@ class StdioHappyBot(HappyBot):
     async def run_stdio(self) -> None:
         self.load_plugins()
         self._start_background_tasks()
-         loop = asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
         while True:
             try:
                 line = await loop.run_in_executor(None, input)
