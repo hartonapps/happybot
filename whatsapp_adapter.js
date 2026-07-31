@@ -1,3 +1,4 @@
+
 const readline = require('readline');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -11,6 +12,10 @@ const RECONNECT_DELAY_MS = 5000;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function baseMessageId(id) {
+  return String(id || '').replace(/-\d+$/, '');
 }
 
 function clearSession(reason) {
@@ -44,15 +49,22 @@ function startPythonCore(sock, messageCache, botMessageIds) {
     }
     const action = JSON.parse(line);
     if (action.action === 'send_message') {
-      const options = action.reply_to && messageCache.has(action.reply_to) ? { quoted: messageCache.get(action.reply_to) } : {};
+      const options = action.reply_to && messageCache.has(baseMessageId(action.reply_to))
+        ? { quoted: messageCache.get(baseMessageId(action.reply_to)) }
+        : {};
       const result = await sock.sendMessage(action.chat_id, { text: action.text }, options);
       if (result?.key?.id) {
         botMessageIds.add(result.key.id);
-        messageCache.set(result.key.id, result);
+        messageCache.set(baseMessageId(result.key.id), result);
       }
     }
     if (action.action === 'react') {
-      await sock.sendMessage(action.chat_id, { react: { text: action.emoji, key: { id: action.message_id, remoteJid: action.chat_id } } });
+      await sock.sendMessage(action.chat_id, {
+        react: {
+          text: action.emoji,
+          key: { id: action.message_id, remoteJid: action.chat_id }
+        }
+      });
     }
   });
 
@@ -67,6 +79,7 @@ async function start(attempt = 1) {
   let py = null;
   const messageCache = new Map();
   const botMessageIds = new Set();
+
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   if (!state.creds.registered) {
     console.log('No saved WhatsApp session found. Run `node connect.js` first, or run `python main.py` to launch setup automatically.');
@@ -82,6 +95,7 @@ async function start(attempt = 1) {
   });
 
   sock.ev.on('creds.update', saveCreds);
+
   sock.ev.on('connection.update', async ({ connection, lastDisconnect }) => {
     if (connection === 'open') {
       console.log('HappyBot connected to WhatsApp. Loading plugins now...');
@@ -115,11 +129,14 @@ async function start(attempt = 1) {
           continue;
         }
       }
-      // CACHE ALL MESSAGES (bigger cache for reactions)
-      messageCache.set(msg.key.id, msg);
-      if (messageCache.size > 10000) messageCache.delete(messageCache.keys().next().value);
-      
-      // Only send notify messages to Python
+
+      // Cache every message under its base id so reactions (which can reference the same id
+      // with a `-N` suffix from Baileys) still resolve to the original.
+      messageCache.set(baseMessageId(msg.key.id), msg);
+      if (messageCache.size > 10000) {
+        messageCache.delete(messageCache.keys().next().value);
+      }
+
       if (type === 'notify') {
         py.stdin.write(JSON.stringify({
           message_id: msg.key.id || `${Date.now()}`,
@@ -134,35 +151,50 @@ async function start(attempt = 1) {
     }
   });
 
-  // Handle reactions - use cached message
   sock.ev.on('messages.reaction', async (reactions) => {
     console.log('🔔 REACTION EVENT FIRED:', reactions.length, 'reactions');
     if (!py || !py.stdin.writable) {
       console.log('❌ Python not ready, skipping reaction');
       return;
     }
+
     for (const { key, reaction } of reactions) {
       const reactionText = reaction.text || reaction;
       console.log(`📍 Processing reaction: ${reactionText} on message ${key.id}`);
-      
-      let originalMessage = messageCache.get(key.id);
+
+      const baseId = baseMessageId(key.id);
+      const originalMessage = messageCache.get(baseId);
       let mediaBase64 = null;
 
-      try {
-    const buffer = await sock.downloadMediaMessage(originalMessage);
-    if (buffer) mediaBase64 = buffer.toString("base64");
-} catch (err) {
-    console.log("Download failed:", err);
-}
       if (!originalMessage) {
-        console.log(`❌ Message ${key.id} not in cache. Cache size: ${messageCache.size}`);
-        console.log(`📋 Cached message IDs: ${Array.from(messageCache.keys()).slice(-5)}`);
+        console.log(`❌ Message ${key.id} (base ${baseId}) not in cache. Cache size: ${messageCache.size}`);
         continue;
       }
-      
+
+      // Try to attach the media payload (image/video/audio/document/sticker) as base64.
+      try {
+        const inner = originalMessage.message || {};
+        const mediaNode =
+          inner.imageMessage ||
+          inner.videoMessage ||
+          inner.audioMessage ||
+          inner.documentMessage ||
+          inner.stickerMessage;
+        const mediaKey = mediaNode ? Object.keys(mediaNode)[0] : null; // e.g. "imageMessage"
+
+        if (mediaNode && mediaKey && typeof sock.downloadContentFromMessage === 'function') {
+          const mediaType = mediaKey.replace(/Message$/, ''); // "image", "video", ...
+          const stream = await sock.downloadContentFromMessage(mediaNode, mediaType);
+          const chunks = [];
+          for await (const chunk of stream) chunks.push(chunk);
+          mediaBase64 = Buffer.concat(chunks).toString('base64');
+        }
+      } catch (err) {
+        console.log('Download failed:', err);
+      }
+
       console.log(`✅ Found message in cache! Sending to Python`);
-      console.log(`Raw message has keys:`, Object.keys(originalMessage.message || {}));
-      
+
       py.stdin.write(JSON.stringify({
         message_id: key.id,
         chat_id: key.remoteJid,
