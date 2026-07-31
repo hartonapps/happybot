@@ -85,9 +85,9 @@ async def on_reaction(ctx):
             logger.info(f"Downloading {media_type} media...")
             media_file = await ctx.bot.download_media(ctx.event)
 
-if not media_file:
-    logger.error("Failed to download media")
-    return
+            if not media_file:
+                logger.error("Failed to download media")
+                return
             
             if not media_buffer:
                 logger.error("Failed to download media")
