@@ -4,6 +4,7 @@ const fs = require('fs');
 const makeWASocket = require('@whiskeysockets/baileys').default;
 const { DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys');
 const P = require('pino');
+const makeWASocket = require('@whiskeysockets/baileys').default;
 
 const AUTH_DIR = 'auth_info';
 const MAX_RECONNECTS = 5;
@@ -146,6 +147,17 @@ async function start(attempt = 1) {
       console.log(`📍 Processing reaction: ${reactionText} on message ${key.id}`);
       
       let originalMessage = messageCache.get(key.id);
+      let mediaBase64 = null;
+
+      try {
+    //   download image/video/document here
+    //   returns a Buffer
+
+        mediaBase64 = buffer.toString("base64");
+}
+      catch (err) {
+    console.log("Download failed:", err);
+}
       
       if (!originalMessage) {
         console.log(`❌ Message ${key.id} not in cache. Cache size: ${messageCache.size}`);
@@ -163,7 +175,8 @@ async function start(attempt = 1) {
         text: reactionText,
         kind: 'reaction',
         is_group: Boolean(key.participant),
-        raw: originalMessage
+        raw: originalMessage,
+        media_base64: mediaBase64
       }) + '\n');
     }
   });
