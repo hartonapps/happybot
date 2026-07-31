@@ -128,6 +128,24 @@ async function start(attempt = 1) {
       }) + '\n');
     }
   });
+
+  sock.ev.on('messages.reaction', (reactions) => {
+    if (!py || !py.stdin.writable) return;
+    for (const { key, reaction } of reactions) {
+      const originalMessage = messageCache.get(key.id);
+      if (!originalMessage) continue;
+      
+      py.stdin.write(JSON.stringify({
+        message_id: key.id,
+        chat_id: key.remoteJid,
+        sender_id: key.participant || key.remoteJid,
+        text: reaction,
+        kind: 'reaction',
+        is_group: Boolean(key.participant),
+        raw: originalMessage
+      }) + '\n');
+    }
+  });
 }
 
 start();
