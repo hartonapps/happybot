@@ -152,29 +152,24 @@ async function start(attempt = 1) {
             originalMessage = fetchedMsg;
             messageCache.set(key.id, fetchedMsg);
           } else {
-            console.log(`❌ Could not fetch message ${key.id}`);
+            console.log(`❌ Could not fetch message ${key.id}, creating dummy object`);
+            // Create a minimal message object so Python gets something
+            originalMessage = { key: key, message: {} };
           }
         } catch (err) {
           console.log(`❌ Error fetching message: ${err.message}`);
+          originalMessage = { key: key, message: {} };
         }
       }
       
       if (!originalMessage) {
-        console.log(`⚠️ Skipping reaction - message ${key.id} not available`);
-        // Still send to Python so plugin can log it
-        py.stdin.write(JSON.stringify({
-          message_id: key.id,
-          chat_id: key.remoteJid,
-          sender_id: key.participant || key.remoteJid,
-          text: reactionText,
-          kind: 'reaction',
-          is_group: Boolean(key.participant),
-          raw: null
-        }) + '\n');
-        continue;
+        console.log(`⚠️ Message ${key.id} still not available`);
+        originalMessage = { key: key, message: {} };
       }
       
       console.log(`✅ Sending reaction to Python: emoji=${reactionText}, message=${key.id}`);
+      console.log(`Raw message object keys:`, Object.keys(originalMessage));
+      
       py.stdin.write(JSON.stringify({
         message_id: key.id,
         chat_id: key.remoteJid,
