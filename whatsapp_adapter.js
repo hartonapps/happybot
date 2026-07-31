@@ -129,12 +129,22 @@ async function start(attempt = 1) {
     }
   });
 
-  sock.ev.on('messages.reaction', (reactions) => {
-    if (!py || !py.stdin.writable) return;
+  // DEBUG: Log all incoming events
+  sock.ev.on('messages.reaction', async (reactions) => {
+    console.log('🔔 REACTION EVENT FIRED:', reactions);
+    if (!py || !py.stdin.writable) {
+      console.log('❌ Python not ready, skipping reaction');
+      return;
+    }
     for (const { key, reaction } of reactions) {
+      console.log(`📍 Processing reaction: ${reaction} on message ${key.id}`);
       const originalMessage = messageCache.get(key.id);
-      if (!originalMessage) continue;
+      if (!originalMessage) {
+        console.log(`❌ Message ${key.id} not in cache`);
+        continue;
+      }
       
+      console.log(`✅ Sending reaction to Python: emoji=${reaction}, message=${key.id}`);
       py.stdin.write(JSON.stringify({
         message_id: key.id,
         chat_id: key.remoteJid,
