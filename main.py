@@ -317,14 +317,50 @@ class HappyBot:
     async def adapter_action(self, action: str, **kwargs: Any) -> None:
         self.log.info("adapter_action action=%s kwargs=%s", action, kwargs)
 
-    async def download_media(self, event: Event, target_dir: str | Path | None = None) -> Path | None:
-        if event.media is None:
-            return None
-        directory = Path(target_dir) if target_dir else self.temp_dir
-        directory.mkdir(parents=True, exist_ok=True)
-        target = directory / f"{event.message_id}.bin"
-        target.write_bytes(event.media if isinstance(event.media, bytes) else bytes(event.media))
-        return target
+    async def download_media(self, event: Event | dict, target_dir: str | Path | None = None) -> Path | None:
+    """
+    Save media that has already been supplied by the WhatsApp adapter.
+
+    The adapter should place the downloaded media bytes in:
+        event.media               (Event object)
+    or
+        event["media"]            (raw dict)
+
+    The adapter may also send base64-encoded media as:
+        event["media_base64"]
+    """
+
+    import base64
+
+    media = None
+    message_id = "media"
+
+    if isinstance(event, dict):
+        media = event.get("media")
+
+        if media is None and event.get("media_base64"):
+            media = base64.b64decode(event["media_base64"])
+
+        message_id = event.get("message_id", "media")
+
+    else:
+        media = event.media
+        message_id = event.message_id
+
+    if media is None:
+        return None
+
+    directory = Path(target_dir) if target_dir else self.temp_dir
+    directory.mkdir(parents=True, exist_ok=True)
+
+    target = directory / f"{message_id}.bin"
+
+    if isinstance(media, bytes):
+        target.write_bytes(media)
+    else:
+        target.write_bytes(bytes(media))
+
+    return target
 
     def help_text(self) -> str:
         lines = ["Available commands:"]
