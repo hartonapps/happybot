@@ -422,7 +422,6 @@ class StdioHappyBot(HappyBot):
             self.log.exception("Invalid adapter event: %s", line)
             continue
         await self._dispatch(event)
-                
 
     async def send_message(self, chat_id: str, text: str, **kwargs: Any) -> None:
         self._write_action({"action": "send_message", "chat_id": chat_id, "text": text, **kwargs})
