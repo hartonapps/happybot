@@ -106,7 +106,7 @@ async function start(attempt = 1) {
   });
 
   sock.ev.on('messages.upsert', ({ messages, type }) => {
-    if (type !== 'notify' || !py || !py.stdin.writable) return;
+    if (!py || !py.stdin.writable) return;
     for (const msg of messages) {
       if (!msg.message) continue;
       if (msg.key.fromMe) {
@@ -115,21 +115,26 @@ async function start(attempt = 1) {
           continue;
         }
       }
+      // CACHE ALL MESSAGES (bigger cache for reactions)
       messageCache.set(msg.key.id, msg);
-      if (messageCache.size > 5000) messageCache.delete(messageCache.keys().next().value);
-      py.stdin.write(JSON.stringify({
-        message_id: msg.key.id || `${Date.now()}`,
-        chat_id: msg.key.remoteJid,
-        sender_id: msg.key.participant || msg.key.remoteJid,
-        text: textFromMessage(msg.message),
-        kind: 'message',
-        is_group: Boolean(msg.key.participant),
-        raw: msg
-      }) + '\n');
+      if (messageCache.size > 10000) messageCache.delete(messageCache.keys().next().value);
+      
+      // Only send notify messages to Python
+      if (type === 'notify') {
+        py.stdin.write(JSON.stringify({
+          message_id: msg.key.id || `${Date.now()}`,
+          chat_id: msg.key.remoteJid,
+          sender_id: msg.key.participant || msg.key.remoteJid,
+          text: textFromMessage(msg.message),
+          kind: 'message',
+          is_group: Boolean(msg.key.participant),
+          raw: msg
+        }) + '\n');
+      }
     }
   });
 
-  // Handle reactions - fetch message if not in cache
+  // Handle reactions - use cached message
   sock.ev.on('messages.reaction', async (reactions) => {
     console.log('🔔 REACTION EVENT FIRED:', reactions.length, 'reactions');
     if (!py || !py.stdin.writable) {
@@ -142,33 +147,14 @@ async function start(attempt = 1) {
       
       let originalMessage = messageCache.get(key.id);
       
-      // If message not in cache, try to fetch it from WhatsApp
       if (!originalMessage) {
-        console.log(`⚠️ Message ${key.id} not in cache, attempting to fetch from WhatsApp...`);
-        try {
-          const fetchedMsg = await sock.loadMessage(key.remoteJid, key.id);
-          if (fetchedMsg) {
-            console.log(`✅ Fetched message ${key.id} from WhatsApp`);
-            originalMessage = fetchedMsg;
-            messageCache.set(key.id, fetchedMsg);
-          } else {
-            console.log(`❌ Could not fetch message ${key.id}, creating dummy object`);
-            // Create a minimal message object so Python gets something
-            originalMessage = { key: key, message: {} };
-          }
-        } catch (err) {
-          console.log(`❌ Error fetching message: ${err.message}`);
-          originalMessage = { key: key, message: {} };
-        }
+        console.log(`❌ Message ${key.id} not in cache. Cache size: ${messageCache.size}`);
+        console.log(`📋 Cached message IDs: ${Array.from(messageCache.keys()).slice(-5)}`);
+        continue;
       }
       
-      if (!originalMessage) {
-        console.log(`⚠️ Message ${key.id} still not available`);
-        originalMessage = { key: key, message: {} };
-      }
-      
-      console.log(`✅ Sending reaction to Python: emoji=${reactionText}, message=${key.id}`);
-      console.log(`Raw message object keys:`, Object.keys(originalMessage));
+      console.log(`✅ Found message in cache! Sending to Python`);
+      console.log(`Raw message has keys:`, Object.keys(originalMessage.message || {}));
       
       py.stdin.write(JSON.stringify({
         message_id: key.id,
