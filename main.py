@@ -106,7 +106,9 @@ class Context:
         self.event = event
         self.message = event.text
         self.sender = normalize_whatsapp_id(event.sender_id)
-        self.bot.log.info(f"DEBUG: sender_id={event.sender_id} -> normalized={self.sender} -> is_owner={self.sender in self.bot.owner_ids}")
+        self.bot.log.info(
+            f"DEBUG: sender_id={event.sender_id} -> normalized={self.sender} -> is_owner={self.sender in self.bot.owner_ids}"
+        )
 
         self.chat = event.chat_id
         self.command = command
@@ -145,7 +147,16 @@ class PluginAPI:
 
     def command(self, name: str, *, aliases: tuple[str, ...] = (), owner_only: bool = False, admin_only: bool = False, help: str = ""):
         def decorator(func: Handler) -> Handler:
-            self.commands.append(({"name": name.lower(), "aliases": tuple(alias.lower() for alias in aliases), "owner_only": owner_only, "admin_only": admin_only, "help": help}, func))
+            self.commands.append((
+                {
+                    "name": name.lower(),
+                    "aliases": tuple(alias.lower() for alias in aliases),
+                    "owner_only": owner_only,
+                    "admin_only": admin_only,
+                    "help": help,
+                },
+                func,
+            ))
             return func
 
         return decorator
@@ -170,7 +181,11 @@ class HappyBot:
 
     def __init__(self) -> None:
         self.prefixes = tuple(config.PREFIXES)
-        self.owner_ids = {normalize_whatsapp_id(owner_id) for owner_id in config.OWNER_IDS if normalize_whatsapp_id(owner_id)}
+        self.owner_ids = {
+            normalize_whatsapp_id(owner_id)
+            for owner_id in config.OWNER_IDS
+            if normalize_whatsapp_id(owner_id)
+        }
         self.plugins_path = Path(config.PLUGINS_PATH)
         self.db = JsonDatabase(config.DATABASE_PATH)
         self.plugins: dict[str, PluginInfo] = {}
@@ -266,7 +281,7 @@ class HappyBot:
     def _parse_command(self, text: str) -> tuple[str, list[str]]:
         for prefix in self.prefixes:
             if text.startswith(prefix):
-                parts = text[len(prefix) :].split()
+                parts = text[len(prefix):].split()
                 return (parts[0].lower(), parts[1:]) if parts else ("", [])
         return "", []
 
@@ -318,49 +333,49 @@ class HappyBot:
         self.log.info("adapter_action action=%s kwargs=%s", action, kwargs)
 
     async def download_media(self, event: Event | dict, target_dir: str | Path | None = None) -> Path | None:
-    """
-    Save media that has already been supplied by the WhatsApp adapter.
+        """
+        Save media that has already been supplied by the WhatsApp adapter.
 
-    The adapter should place the downloaded media bytes in:
-        event.media               (Event object)
-    or
-        event["media"]            (raw dict)
+        The adapter should place the downloaded media bytes in:
+            event.media               (Event object)
+        or
+            event["media"]            (raw dict)
 
-    The adapter may also send base64-encoded media as:
-        event["media_base64"]
-    """
+        The adapter may also send base64-encoded media as:
+            event["media_base64"]
+        """
 
-    import base64
+        import base64
 
-    media = None
-    message_id = "media"
+        media = None
+        message_id = "media"
 
-    if isinstance(event, dict):
-        media = event.get("media")
+        if isinstance(event, dict):
+            media = event.get("media")
 
-        if media is None and event.get("media_base64"):
-            media = base64.b64decode(event["media_base64"])
+            if media is None and event.get("media_base64"):
+                media = base64.b64decode(event["media_base64"])
 
-        message_id = event.get("message_id", "media")
+            message_id = event.get("message_id", "media")
 
-    else:
-        media = event.media
-        message_id = event.message_id
+        else:
+            media = event.media
+            message_id = event.message_id
 
-    if media is None:
-        return None
+        if media is None:
+            return None
 
-    directory = Path(target_dir) if target_dir else self.temp_dir
-    directory.mkdir(parents=True, exist_ok=True)
+        directory = Path(target_dir) if target_dir else self.temp_dir
+        directory.mkdir(parents=True, exist_ok=True)
 
-    target = directory / f"{message_id}.bin"
+        target = directory / f"{message_id}.bin"
 
-    if isinstance(media, bytes):
-        target.write_bytes(media)
-    else:
-        target.write_bytes(bytes(media))
+        if isinstance(media, bytes):
+            target.write_bytes(media)
+        else:
+            target.write_bytes(bytes(media))
 
-    return target
+        return target
 
     def help_text(self) -> str:
         lines = ["Available commands:"]
