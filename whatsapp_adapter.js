@@ -38,21 +38,22 @@ function textFromMessage(message) {
     ''
   );
 }
-
 function startPythonCore(sock, messageCache, botMessageIds) {
   const py = spawn(process.env.PYTHON || 'python', ['main.py', '--stdio', '--debug'], {
     cwd: process.cwd(),
-    stdio: ['pipe', 'pipe', 'inherit'],
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },   // <-- force flush on Python side
+    // 'pipe' for all three so we can explicitly listen on stderr (Termux drops 'inherit' sometimes).
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },
   });
 
   console.log(`🐍 Python core spawned, pid=${py.pid}`);
 
-  // Watch Python's stderr explicitly even though we set 'inherit'.
-  // Termux sometimes drops it; this guarantees we see crashes.
-  py.stderr.on('data', (data) => {
-    process.stderr.write(`🐍 PY-ERR: ${data}`);
-  });
+  // Pipe stderr through with a clear prefix so tracebacks are obvious in the log.
+  if (py.stderr) {
+    py.stderr.on('data', (data) => {
+      process.stderr.write(`🐍 PY-ERR: ${data}`);
+    });
+  }
 
   py.on('exit', (code, signal) => {
     console.log(`🐍 Python core exited (code=${code}, signal=${signal})`);
@@ -109,9 +110,18 @@ function startPythonCore(sock, messageCache, botMessageIds) {
     }
   });
 
-  return py;
-}
+  // CRITICAL: detect stdout closing (e.g. Python crashed). Without this, Node
+  // never realises Python is dead and the bridge silently breaks.
+  py.stdout.on('close', () => {
+    console.error('🐍 Python stdout closed — bridge is dead, restart the bot');
+  });
+  py.stdout.on('error', (err) => {
+    console.error('🐍 Python stdout error:', err);
+  });
 
+  return py;
+  
+}
 async function start(attempt = 1) {
   let py = null;
   const messageCache = new Map();
