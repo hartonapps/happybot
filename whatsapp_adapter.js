@@ -1,4 +1,3 @@
-
 const readline = require('readline');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -9,6 +8,11 @@ const P = require('pino');
 const AUTH_DIR = 'auth_info';
 const MAX_RECONNECTS = 5;
 const RECONNECT_DELAY_MS = 5000;
+const DEBUG = process.env.DEBUG_ADAPTER === '1';
+
+function dbg(...args) {
+  if (DEBUG) console.log('🪵', ...args);
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -36,9 +40,26 @@ function textFromMessage(message) {
 }
 
 function startPythonCore(sock, messageCache, botMessageIds) {
-  const py = spawn(process.env.PYTHON || 'python', ['main.py', '--stdio'], {
+  const py = spawn(process.env.PYTHON || 'python', ['main.py', '--stdio', '--debug'], {
     cwd: process.cwd(),
-    stdio: ['pipe', 'pipe', 'inherit']
+    stdio: ['pipe', 'pipe', 'inherit'],
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },   // <-- force flush on Python side
+  });
+
+  console.log(`🐍 Python core spawned, pid=${py.pid}`);
+
+  // Watch Python's stderr explicitly even though we set 'inherit'.
+  // Termux sometimes drops it; this guarantees we see crashes.
+  py.stderr.on('data', (data) => {
+    process.stderr.write(`🐍 PY-ERR: ${data}`);
+  });
+
+  py.on('exit', (code, signal) => {
+    console.log(`🐍 Python core exited (code=${code}, signal=${signal})`);
+  });
+
+  py.on('error', (err) => {
+    console.error('🐍 Python spawn error:', err);
   });
 
   const pyLines = readline.createInterface({ input: py.stdout });
@@ -47,29 +68,45 @@ function startPythonCore(sock, messageCache, botMessageIds) {
       console.log(line);
       return;
     }
-    const action = JSON.parse(line);
+    let action;
+    try {
+      action = JSON.parse(line);
+    } catch (err) {
+      console.error('Bad JSON from python:', line, err);
+      return;
+    }
     if (action.action === 'send_message') {
-      const options = action.reply_to && messageCache.has(baseMessageId(action.reply_to))
-        ? { quoted: messageCache.get(baseMessageId(action.reply_to)) }
+      const replyId = action.reply_to ? baseMessageId(action.reply_to) : null;
+      const options = replyId && messageCache.has(replyId)
+        ? { quoted: messageCache.get(replyId) }
         : {};
-      const result = await sock.sendMessage(action.chat_id, { text: action.text }, options);
-      if (result?.key?.id) {
-        botMessageIds.add(result.key.id);
-        messageCache.set(baseMessageId(result.key.id), result);
+      try {
+        const result = await sock.sendMessage(
+          action.chat_id, { text: action.text }, options
+        );
+        if (result?.key?.id) {
+          botMessageIds.add(result.key.id);
+          messageCache.set(baseMessageId(result.key.id), result);
+        }
+      } catch (err) {
+        console.error('sendMessage failed:', err);
       }
     }
     if (action.action === 'react') {
-      await sock.sendMessage(action.chat_id, {
-        react: {
-          text: action.emoji,
-          key: { id: action.message_id, remoteJid: action.chat_id }
-        }
-      });
+      try {
+        await sock.sendMessage(action.chat_id, {
+          react: {
+            text: action.emoji,
+            key: { id: action.message_id, remoteJid: action.chat_id }
+          }
+        });
+      } catch (err) {
+        console.error('react failed:', err);
+      }
     }
-  });
-
-  py.on('exit', (code) => {
-    if (code !== 0) console.log(`Python core exited with code ${code}.`);
+    if (action.action === 'adapter_action') {
+      dbg('adapter_action from python:', action);
+    }
   });
 
   return py;
@@ -119,38 +156,68 @@ async function start(attempt = 1) {
     }
   });
 
+  // ----------------------------------------------------------------
+  // messages.upsert — every incoming message
+  // ----------------------------------------------------------------
   sock.ev.on('messages.upsert', ({ messages, type }) => {
+    dbg(`upsert: count=${messages.length} type=${type} py_alive=${!!(py && py.stdin.writable)}`);
     if (!py || !py.stdin.writable) return;
+
     for (const msg of messages) {
-      if (!msg.message) continue;
-      if (msg.key.fromMe) {
-        if (botMessageIds.has(msg.key.id)) {
-          botMessageIds.delete(msg.key.id);
-          continue;
-        }
+      if (!msg.message) {
+        dbg(`  skip ${msg.key?.id}: no message body`);
+        continue;
       }
 
-      // Cache every message under its base id so reactions (which can reference the same id
-      // with a `-N` suffix from Baileys) still resolve to the original.
+      const text = textFromMessage(msg.message);
+      const fromMe = !!msg.key.fromMe;
+      const isBotEcho = botMessageIds.has(msg.key.id);
+
+      dbg(`  msg id=${msg.key.id} fromMe=${fromMe} isBotEcho=${isBotEcho} remoteJid=${msg.key.remoteJid} participant=${msg.key.participant || '-'} text=${JSON.stringify(text.slice(0, 40))}`);
+
+      // Drop ONLY the bot's own echo (a message we just sent via send_message).
+      // Do NOT drop owner self-test messages — they need to reach Python so .ping works.
+      if (fromMe && isBotEcho) {
+        botMessageIds.delete(msg.key.id);
+        dbg(`    → dropped bot echo`);
+        continue;
+      }
+
+      // Always cache so reactions to this message can be looked up.
       messageCache.set(baseMessageId(msg.key.id), msg);
       if (messageCache.size > 10000) {
         messageCache.delete(messageCache.keys().next().value);
       }
 
-      if (type === 'notify') {
-        py.stdin.write(JSON.stringify({
-          message_id: msg.key.id || `${Date.now()}`,
-          chat_id: msg.key.remoteJid,
-          sender_id: msg.key.participant || msg.key.remoteJid,
-          text: textFromMessage(msg.message),
-          kind: 'message',
-          is_group: Boolean(msg.key.participant),
-          raw: msg
-        }) + '\n');
+      if (type !== 'notify') {
+        dbg(`    → not forwarding (type=${type})`);
+        continue;
+      }
+
+      const payload = JSON.stringify({
+        message_id: msg.key.id || `${Date.now()}`,
+        chat_id: msg.key.remoteJid,
+        sender_id: msg.key.participant || msg.key.remoteJid,
+        text,
+        kind: 'message',
+        is_group: Boolean(msg.key.participant),
+        raw: msg
+      }) + '\n';
+
+      const ok = py.stdin.write(payload);
+      dbg(`    → wrote ${payload.length} bytes to python, ok=${ok}`);
+
+      // If the kernel buffer is full, wait for drain before the next write.
+      if (ok === false) {
+        dbg('    → py.stdin buffer full, waiting for drain');
+        py.stdin.once('drain', () => dbg('    → py.stdin drained'));
       }
     }
   });
 
+  // ----------------------------------------------------------------
+  // messages.reaction — every reaction (including on stories)
+  // ----------------------------------------------------------------
   sock.ev.on('messages.reaction', async (reactions) => {
     console.log('🔔 REACTION EVENT FIRED:', reactions.length, 'reactions');
     if (!py || !py.stdin.writable) {
@@ -168,6 +235,7 @@ async function start(attempt = 1) {
 
       if (!originalMessage) {
         console.log(`❌ Message ${key.id} (base ${baseId}) not in cache. Cache size: ${messageCache.size}`);
+        console.log(`   Last cached ids: ${Array.from(messageCache.keys()).slice(-5).join(', ')}`);
         continue;
       }
 
@@ -180,7 +248,7 @@ async function start(attempt = 1) {
           inner.audioMessage ||
           inner.documentMessage ||
           inner.stickerMessage;
-        const mediaKey = mediaNode ? Object.keys(mediaNode)[0] : null; // e.g. "imageMessage"
+        const mediaKey = mediaNode ? Object.keys(mediaNode)[0] : null;
 
         if (mediaNode && mediaKey && typeof sock.downloadContentFromMessage === 'function') {
           const mediaType = mediaKey.replace(/Message$/, ''); // "image", "video", ...
@@ -195,7 +263,7 @@ async function start(attempt = 1) {
 
       console.log(`✅ Found message in cache! Sending to Python`);
 
-      py.stdin.write(JSON.stringify({
+      const payload = JSON.stringify({
         message_id: key.id,
         chat_id: key.remoteJid,
         sender_id: key.participant || key.remoteJid,
@@ -204,9 +272,28 @@ async function start(attempt = 1) {
         is_group: Boolean(key.participant),
         raw: originalMessage,
         media_base64: mediaBase64
-      }) + '\n');
+      }) + '\n';
+
+      const ok = py.stdin.write(payload);
+      console.log(`   → wrote ${payload.length} bytes, ok=${ok}`);
     }
   });
+
+  // ----------------------------------------------------------------
+  // Optional: surface ALL events for debugging
+  // ----------------------------------------------------------------
+  if (DEBUG) {
+    for (const ev of ['messages.update', 'message-receipt.update', 'presence.update', 'chats.update', 'contacts.update']) {
+      sock.ev.on(ev, (payload) => {
+        const summary = Array.isArray(payload)
+          ? `${payload.length} item(s)`
+          : typeof payload === 'object'
+            ? Object.keys(payload).join(',')
+            : String(payload);
+        dbg(`📡 ${ev}: ${summary.slice(0, 120)}`);
+      });
+    }
+  }
 }
 
 start();
